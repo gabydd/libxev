@@ -353,10 +353,11 @@ fn AsyncMachPort(comptime xev: type) type {
 /// loop state. This is kind of a hacky implementation and not recommended
 /// but its the only way currently to get asyncs to work on WASI.
 fn AsyncLoopState(comptime xev: type, comptime threaded: bool) type {
+    _ = threaded; // autofix
     // TODO: we don't support threaded loop state async. We _can_ it just
     // isn't done yet. To support it we need to have some sort of mutex
     // to guard waiter below.
-    if (threaded) return struct {};
+    // if (threaded) return struct {};
 
     return struct {
         const Self = @This();

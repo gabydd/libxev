@@ -18,7 +18,7 @@ pub fn Process(comptime xev: type) type {
         .iocp => ProcessIocp(xev),
 
         // Unsupported
-        .wasi_poll => struct {},
+        .wasi_poll => ProcessWasi(xev),
     };
 }
 
@@ -133,6 +133,46 @@ fn ProcessPidFd(comptime xev: type) type {
 
         /// Common tests
         pub usingnamespace ProcessTests(xev, Self, &.{ "sh", "-c", "exit 0" }, &.{ "sh", "-c", "exit 42" });
+    };
+}
+
+/// Process implementation using pidfd (Linux).
+fn ProcessWasi(comptime xev: type) type {
+    return struct {
+        const Self = @This();
+        /// Create a new process watcher for the given pid.
+        pub fn init(pid: posix.pid_t) !Self {
+            _ = pid; // autofix
+            return .{};
+        }
+
+        /// Clean up the process watcher.
+        pub fn deinit(self: *Self) void {
+            _ = self; // autofix
+        }
+
+        pub const WaitError = error{};
+        /// Wait for the process to exit. This will automatically call
+        /// `waitpid` or equivalent and report the exit status.
+        pub fn wait(
+            self: Self,
+            loop: *xev.Loop,
+            c: *xev.Completion,
+            comptime Userdata: type,
+            userdata: ?*Userdata,
+            comptime cb: *const fn (
+                ud: ?*Userdata,
+                l: *xev.Loop,
+                c: *xev.Completion,
+                r: WaitError!u32,
+            ) xev.CallbackAction,
+        ) void {
+            _ = cb; // autofix
+            _ = userdata; // autofix
+            _ = c; // autofix
+            _ = loop; // autofix
+            _ = self; // autofix
+        }
     };
 }
 

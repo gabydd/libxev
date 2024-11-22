@@ -10,8 +10,8 @@ const xev = @import("../main.zig").WasiPoll;
 pub const Loop = struct {
     pub const threaded = std.Target.wasm.featureSetHas(builtin.cpu.features, .atomics);
     const TimerHeap = heap.Intrusive(Timer, void, Timer.less);
-    const WakeupType = if (threaded) std.atomic.Atomic(bool) else bool;
-    const wakeup_init = if (threaded) .{ .value = false } else false;
+    const WakeupType = if (threaded) std.atomic.Value(bool) else bool;
+    const wakeup_init = if (threaded) WakeupType.init(false) else false;
 
     /// The number of active completions. This DOES NOT include completions that
     /// are queued in the submissions queue.
@@ -104,8 +104,8 @@ pub const Loop = struct {
         assert(c.op == .async_wait);
 
         if (threaded) {
-            self.wakeup.store(true, .SeqCst);
-            c.op.async_wait.wakeup.store(true, .SeqCst);
+            self.wakeup.store(true, .seq_cst);
+            c.op.async_wait.wakeup.store(true, .seq_cst);
         } else {
             self.wakeup = true;
             c.op.async_wait.wakeup = true;
@@ -177,11 +177,11 @@ pub const Loop = struct {
 
             // Run our async waiters
             if (!self.asyncs.empty()) {
-                const wakeup = if (threaded) self.wakeup.load(.SeqCst) else self.wakeup;
+                const wakeup = if (threaded) self.wakeup.load(.seq_cst) else self.wakeup;
                 if (wakeup) {
                     // Reset to false, we've "woken up" now.
                     if (threaded)
-                        self.wakeup.store(false, .SeqCst)
+                        self.wakeup.store(false, .seq_cst)
                     else
                         self.wakeup = false;
 
@@ -195,7 +195,7 @@ pub const Loop = struct {
                     self.asyncs = .{};
                     while (asyncs.pop()) |c| {
                         const c_wakeup = if (threaded)
-                            c.op.async_wait.wakeup.load(.SeqCst)
+                            c.op.async_wait.wakeup.load(.seq_cst)
                         else
                             c.op.async_wait.wakeup;
 
@@ -241,10 +241,10 @@ pub const Loop = struct {
             self.batch.array[0] = .{
                 .userdata = 0,
                 .u = .{
-                    .tag = wasi.EVENTTYPE_CLOCK,
+                    .tag = wasi.eventtype_t.CLOCK,
                     .u = .{
                         .clock = .{
-                            .id = @as(u32, @bitCast(posix.CLOCK.MONOTONIC)),
+                            .id = posix.CLOCK.MONOTONIC,
                             .timeout = timeout,
                             .precision = 1 * std.time.ns_per_ms,
                             .flags = wasi.SUBSCRIPTION_CLOCK_ABSTIME,
@@ -363,9 +363,9 @@ pub const Loop = struct {
 
             .shutdown => |v| res: {
                 const how: wasi.sdflags_t = switch (v.how) {
-                    .both => wasi.SHUT.WR | wasi.SHUT.RD,
-                    .recv => wasi.SHUT.RD,
-                    .send => wasi.SHUT.WR,
+                    .both => .{ .WR = true, .RD = true },
+                    .recv => .{ .RD = true },
+                    .send => .{ .WR = true },
                 };
 
                 break :res .{
@@ -569,7 +569,7 @@ pub const Loop = struct {
     fn timer_next(next_ms: u64) wasi.timestamp_t {
         // Get the absolute time we'll execute this timer next.
         var now_ts: wasi.timestamp_t = undefined;
-        switch (wasi.clock_time_get(@as(u32, @bitCast(posix.CLOCK.MONOTONIC)), 1, &now_ts)) {
+        switch (wasi.clock_time_get(posix.CLOCK.MONOTONIC, 1, &now_ts)) {
             .SUCCESS => {},
             .INVAL => unreachable,
             else => unreachable,
@@ -654,7 +654,7 @@ pub const Completion = struct {
             .read => |v| .{
                 .userdata = @intFromPtr(self),
                 .u = .{
-                    .tag = wasi.EVENTTYPE_FD_READ,
+                    .tag = wasi.eventtype_t.FD_READ,
                     .u = .{
                         .fd_read = .{
                             .fd = v.fd,
@@ -666,7 +666,7 @@ pub const Completion = struct {
             .pread => |v| .{
                 .userdata = @intFromPtr(self),
                 .u = .{
-                    .tag = wasi.EVENTTYPE_FD_READ,
+                    .tag = wasi.eventtype_t.FD_READ,
                     .u = .{
                         .fd_read = .{
                             .fd = v.fd,
@@ -678,7 +678,7 @@ pub const Completion = struct {
             .write => |v| .{
                 .userdata = @intFromPtr(self),
                 .u = .{
-                    .tag = wasi.EVENTTYPE_FD_WRITE,
+                    .tag = wasi.eventtype_t.FD_WRITE,
                     .u = .{
                         .fd_write = .{
                             .fd = v.fd,
@@ -690,7 +690,7 @@ pub const Completion = struct {
             .pwrite => |v| .{
                 .userdata = @intFromPtr(self),
                 .u = .{
-                    .tag = wasi.EVENTTYPE_FD_WRITE,
+                    .tag = wasi.eventtype_t.FD_WRITE,
                     .u = .{
                         .fd_write = .{
                             .fd = v.fd,
@@ -702,7 +702,7 @@ pub const Completion = struct {
             .accept => |v| .{
                 .userdata = @intFromPtr(self),
                 .u = .{
-                    .tag = wasi.EVENTTYPE_FD_READ,
+                    .tag = wasi.eventtype_t.FD_READ,
                     .u = .{
                         .fd_read = .{
                             .fd = v.socket,
@@ -714,7 +714,7 @@ pub const Completion = struct {
             .recv => |v| .{
                 .userdata = @intFromPtr(self),
                 .u = .{
-                    .tag = wasi.EVENTTYPE_FD_READ,
+                    .tag = wasi.eventtype_t.FD_READ,
                     .u = .{
                         .fd_read = .{
                             .fd = v.fd,
@@ -726,7 +726,7 @@ pub const Completion = struct {
             .send => |v| .{
                 .userdata = @intFromPtr(self),
                 .u = .{
-                    .tag = wasi.EVENTTYPE_FD_WRITE,
+                    .tag = wasi.eventtype_t.FD_WRITE,
                     .u = .{
                         .fd_write = .{
                             .fd = v.fd,
@@ -762,7 +762,7 @@ pub const Completion = struct {
             .accept => |*op| res: {
                 var out_fd: posix.fd_t = undefined;
                 break :res .{
-                    .accept = switch (wasi.sock_accept(op.socket, 0, &out_fd)) {
+                    .accept = switch (wasi.sock_accept(op.socket, .{}, &out_fd)) {
                         .SUCCESS => out_fd,
                         else => |err| posix.unexpectedErrno(err),
                     },
