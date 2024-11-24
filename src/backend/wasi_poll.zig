@@ -104,6 +104,7 @@ pub const Loop = struct {
         assert(c.op == .async_wait);
 
         if (threaded) {
+            std.log.err("async notifying", .{});
             self.wakeup.store(true, .seq_cst);
             c.op.async_wait.wakeup.store(true, .seq_cst);
         } else {
@@ -185,6 +186,7 @@ pub const Loop = struct {
                     else
                         self.wakeup = false;
 
+                    std.log.err("we woke up", .{});
                     // There is at least one pending async. This isn't efficient
                     // AT ALL. We should improve this in the short term by
                     // using a queue here of asyncs we know should wake up
@@ -253,18 +255,19 @@ pub const Loop = struct {
                 },
             };
 
-            // Build our batch of subscriptions and poll
-            var events: [Batch.capacity]wasi.event_t = undefined;
-            const subs = self.batch.array[0..self.batch.len];
-            assert(events.len >= subs.len);
             var n: usize = 0;
+            // Build our batch of subscriptions and poll
+            var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
+            var events: []wasi.event_t = try gpa.allocator().alloc(wasi.event_t, Batch.capacity);
+            const subs = try gpa.allocator().dupe(wasi.subscription_t, self.batch.array[0..self.batch.len]);
+            assert(events.len >= subs.len);
             switch (wasi.poll_oneoff(&subs[0], &events[0], subs.len, &n)) {
                 .SUCCESS => {},
                 else => |err| return posix.unexpectedErrno(err),
             }
 
             // Poll!
-            for (events[0..n]) |ev| {
+            for (@as([*]wasi.event_t, @ptrFromInt(@intFromPtr(events.ptr)))[0..n]) |*ev| {
                 // A system event
                 if (ev.userdata == 0) continue;
 
@@ -383,6 +386,7 @@ pub const Loop = struct {
 
             .async_wait => res: {
                 // Add our async to the list of asyncs
+                std.log.err("rearm await", .{});
                 self.asyncs.push(completion);
                 break :res null;
             },

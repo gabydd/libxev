@@ -13,7 +13,7 @@ pub fn Async(comptime xev: type) type {
         => AsyncEventFd(xev),
 
         // Supported, uses the backend API
-        .wasi_poll => AsyncLoopState(xev, xev.Loop.threaded),
+        .wasi_poll => AsyncEventFdWasi(xev),
 
         // Supported, uses mach ports
         .kqueue => AsyncMachPort(xev),
@@ -37,6 +37,110 @@ fn AsyncEventFd(comptime xev: type) type {
         pub fn init() !Self {
             return .{
                 .fd = try std.posix.eventfd(0, 0),
+            };
+        }
+
+        /// Clean up the async. This will forcibly deinitialize any resources
+        /// and may result in erroneous wait callbacks to be fired.
+        pub fn deinit(self: *Self) void {
+            std.posix.close(self.fd);
+        }
+
+        /// Wait for a message on this async. Note that async messages may be
+        /// coalesced (or they may not be) so you should not expect a 1:1 mapping
+        /// between send and wait.
+        ///
+        /// Just like the rest of libxev, the wait must be re-queued if you want
+        /// to continue to be notified of async events.
+        ///
+        /// You should NOT register an async with multiple loops (the same loop
+        /// is fine -- but unnecessary). The behavior when waiting on multiple
+        /// loops is undefined.
+        pub fn wait(
+            self: Self,
+            loop: *xev.Loop,
+            c: *xev.Completion,
+            comptime Userdata: type,
+            userdata: ?*Userdata,
+            comptime cb: *const fn (
+                ud: ?*Userdata,
+                l: *xev.Loop,
+                c: *xev.Completion,
+                r: WaitError!void,
+            ) xev.CallbackAction,
+        ) void {
+            c.* = .{
+                .op = .{
+                    .read = .{
+                        .fd = self.fd,
+                        .buffer = .{ .array = undefined },
+                    },
+                },
+
+                .userdata = userdata,
+                .callback = (struct {
+                    fn callback(
+                        ud: ?*anyopaque,
+                        l_inner: *xev.Loop,
+                        c_inner: *xev.Completion,
+                        r: xev.Result,
+                    ) xev.CallbackAction {
+                        return @call(.always_inline, cb, .{
+                            common.userdataValue(Userdata, ud),
+                            l_inner,
+                            c_inner,
+                            if (r.read) |v| assert(v > 0) else |err| err,
+                        });
+                    }
+                }).callback,
+            };
+            loop.add(c);
+        }
+
+        /// Notify a loop to wake up synchronously. This should never block forever
+        /// (it will always EVENTUALLY succeed regardless of if the loop is currently
+        /// ticking or not).
+        ///
+        /// The "c" value is the completion associated with the "wait".
+        ///
+        /// Internal details subject to change but if you're relying on these
+        /// details then you may want to consider using a lower level interface
+        /// using the loop directly:
+        ///
+        ///   - linux+io_uring: eventfd is used. If the eventfd write would block
+        ///     (EAGAIN) then we assume success because the eventfd is full.
+        ///
+        pub fn notify(self: Self) !void {
+            // We want to just write "1" in the correct byte order as our host.
+            const val = @as([8]u8, @bitCast(@as(u64, 1)));
+            _ = posix.write(self.fd, &val) catch |err| switch (err) {
+                error.WouldBlock => return,
+                else => return err,
+            };
+        }
+
+        /// Common tests
+        pub usingnamespace AsyncTests(xev, Self);
+    };
+}
+
+/// Async implementation using eventfd (Linux).
+fn AsyncEventFdWasi(comptime xev: type) type {
+    return struct {
+        const Self = @This();
+
+        /// The error that can come in the wait callback.
+        pub const WaitError = xev.ReadError;
+
+        /// eventfd file descriptor
+        fd: posix.fd_t,
+
+        extern fn eventFd() posix.fd_t;
+        /// Create a new async. An async can be assigned to exactly one loop
+        /// to be woken up. The completion must be allocated in advance.
+        pub fn init() !Self {
+            return .{
+                .fd = eventFd(),
             };
         }
 
@@ -362,17 +466,15 @@ fn AsyncLoopState(comptime xev: type, comptime threaded: bool) type {
     return struct {
         const Self = @This();
 
-        wakeup: bool = false,
-        waiter: ?struct {
-            loop: *xev.Loop,
-            c: *xev.Completion,
-        } = null,
+        fd: u32,
+        extern fn asyncFd() u32;
+        extern fn asyncNotifyFd(fd: u32) u32;
 
         /// The error that can come in the wait callback.
         pub const WaitError = xev.Sys.AsyncError;
 
         pub fn init() !Self {
-            return .{};
+            return .{ .fd = asyncFd() };
         }
 
         pub fn deinit(self: *Self) void {
@@ -380,7 +482,7 @@ fn AsyncLoopState(comptime xev: type, comptime threaded: bool) type {
         }
 
         pub fn wait(
-            self: *Self,
+            _: *Self,
             loop: *xev.Loop,
             c: *xev.Completion,
             comptime Userdata: type,
@@ -414,20 +516,10 @@ fn AsyncLoopState(comptime xev: type, comptime threaded: bool) type {
                 }).callback,
             };
             loop.add(c);
-
-            self.waiter = .{
-                .loop = loop,
-                .c = c,
-            };
-
-            if (self.wakeup) self.notify() catch {};
         }
 
         pub fn notify(self: *Self) !void {
-            if (self.waiter) |w|
-                w.loop.async_notify(w.c)
-            else
-                self.wakeup = true;
+            asyncNotifyFd(self.fd);
         }
 
         /// Common tests
