@@ -257,9 +257,9 @@ pub const Loop = struct {
 
             var n: usize = 0;
             // Build our batch of subscriptions and poll
-            var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
-            var events: []wasi.event_t = try gpa.allocator().alloc(wasi.event_t, Batch.capacity);
-            const subs = try gpa.allocator().dupe(wasi.subscription_t, self.batch.array[0..self.batch.len]);
+            // var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
+            var events: [Batch.capacity]wasi.event_t = undefined;
+            const subs = self.batch.array[0..self.batch.len];
             assert(events.len >= subs.len);
             switch (wasi.poll_oneoff(&subs[0], &events[0], subs.len, &n)) {
                 .SUCCESS => {},
@@ -267,7 +267,7 @@ pub const Loop = struct {
             }
 
             // Poll!
-            for (@as([*]wasi.event_t, @ptrFromInt(@intFromPtr(events.ptr)))[0..n]) |*ev| {
+            for (events[0..n]) |*ev| {
                 // A system event
                 if (ev.userdata == 0) continue;
 
@@ -323,6 +323,7 @@ pub const Loop = struct {
             },
 
             .read => res: {
+                std.log.err("read {}", .{completion.op.read.fd});
                 const sub = self.batch.get(completion) catch |err| break :res .{ .read = err };
                 sub.* = completion.subscription();
                 break :res null;
